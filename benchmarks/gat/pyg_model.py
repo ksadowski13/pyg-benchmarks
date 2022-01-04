@@ -49,9 +49,9 @@ class PyGGAT(nn.Module):
         self._layers.append(GATConv(in_feats, hidden_feats, num_heads))
 
         for i in range(1, num_layers - 1):
-            self._layers.append(GATConv(hidden_feats, hidden_feats, num_heads))
+            self._layers.append(GATConv(num_heads * hidden_feats, hidden_feats, num_heads))
 
-        self._layers.append(GATConv(hidden_feats, out_feats, num_heads))
+        self._layers.append(GATConv(num_heads * hidden_feats, out_feats, num_heads))
 
         if batch_norm:
             self._batch_norms = nn.ModuleList()
@@ -85,22 +85,6 @@ class PyGGAT(nn.Module):
         inputs: torch.Tensor,
     ) -> torch.Tensor:
         x = self._input_dropout(inputs)
-# GAT
-# def forward(self, x, edge_index):
-#     x = F.dropout(x, p=0.6, training=self.training)
-#     x = F.elu(self.conv1(x, edge_index))
-#     x = F.dropout(x, p=0.6, training=self.training)
-#     x = self.conv2(x, edge_index)
-#     return F.log_softmax(x, dim=-1)
-#GraphSage
-# def forward(self, x, adjs):
-#     for i, (edge_index, _, size) in enumerate(adjs):
-#         x_target = x[:size[1]]  # Target nodes are always placed first.
-#         x = self.convs[i]((x, x_target), edge_index)
-#         if i != self.num_layers - 1:
-#             x = x.relu()
-#             x = F.dropout(x, p=0.5, training=self.training)
-#     return x
 
         if isinstance(g, list):
             for i, (layer, block) in enumerate(zip(self._layers, g)):

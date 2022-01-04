@@ -47,8 +47,6 @@ from dgl.nn.pytorch import GATConv
 #         logits = self.gat_layers[-1](self.g, h).mean(1)
 #         return logits
 
-
-
 class DGLGAT(nn.Module):
     def __init__(
         self,
@@ -76,9 +74,9 @@ class DGLGAT(nn.Module):
         self._layers.append(GATConv(in_feats, hidden_feats, num_heads))
 
         for i in range(1, num_layers - 1):
-            self._layers.append(GATConv(hidden_feats, hidden_feats, num_heads))
+            self._layers.append(GATConv(num_heads * hidden_feats, hidden_feats, num_heads))
 
-        self._layers.append(GATConv(hidden_feats, out_feats, num_heads))
+        self._layers.append(GATConv(num_heads * hidden_feats, out_feats, num_heads))
 
         if batch_norm:
             self._batch_norms = nn.ModuleList()
@@ -112,28 +110,13 @@ class DGLGAT(nn.Module):
         inputs: torch.Tensor,
     ) -> torch.Tensor:
         x = self._input_dropout(inputs)
-#GAT
-#     def forward(self, inputs):
-#         h = inputs
-#         for l in range(self.num_layers):
-#             h = self.gat_layers[l](self.g, h).flatten(1)
-#         # output projection
-#         logits = self.gat_layers[-1](self.g, h).mean(1)
-#         return logits
-# GraphSage
-# def forward(self, blocks, x):
-#     h = x
-#     for l, (layer, block) in enumerate(zip(self.layers, blocks)):
-#         h = layer(block, h)
-#         if l != len(self.layers) - 1:
-#             h = self.activation(h)
-#             h = self.dropout(h)
-#    return h
+
         if isinstance(g, list):
             for i, (layer, block) in enumerate(zip(self._layers, g)):
                 x = layer(block, x)
 
                 if i < self._num_layers - 1:
+                    x = x.flatten(-2)
                     x = self._apply_layers(i, x)
         else:
             for i, layer in enumerate(self._layers):
@@ -141,7 +124,7 @@ class DGLGAT(nn.Module):
 
                 if i < self._num_layers - 1:
                     x = self._apply_layers(i, x)
-
+        x = x.mean(-2)
         x = x.squeeze(-1)
 
         return x
@@ -157,7 +140,7 @@ class DGLGAT(nn.Module):
         x = inputs
 
         for i, layer in enumerate(self._layers):
-            hidden_dim = self._hidden_feats if i < self._num_layers - 1 else self._out_feats
+            hidden_dim = self._hidden_feats * self._num_heads if i < self._num_layers - 1 else self._out_feats
 
             y = torch.zeros((g.num_nodes(), hidden_dim))
 
@@ -178,12 +161,13 @@ class DGLGAT(nn.Module):
                 h = layer(block, x[in_nodes].to(device))
 
                 if i < self._num_layers - 1:
+                    h = h.flatten(-2)
                     h = self._apply_layers(i, h)
-
+                else:
+                    h = h.mean(-2)
                 y[out_nodes] = h.cpu()
 
             x = y
-
         x = x.squeeze(-1)
 
         return x
