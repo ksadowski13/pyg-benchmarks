@@ -118,7 +118,7 @@ class PyGGAT(nn.Module):
         x = inputs
 
         for i, layer in enumerate(self._layers):
-            hidden_dim = self._hidden_feats if i < self._num_layers - 1 else self._out_feats
+            hidden_dim = self._hidden_feats  * self._num_heads if i < self._num_layers - 1 else self._out_feats  * self._num_heads
 
             y = torch.zeros((g.num_nodes, hidden_dim))
 
