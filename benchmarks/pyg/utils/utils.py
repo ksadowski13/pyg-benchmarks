@@ -46,26 +46,15 @@ def process_dataset(
     g.y = g.y.squeeze(-1)
 
     if reverse_edges:
-        if library == 'dgl':
-            src, dst = g.all_edges()
-
-            g.add_edges(dst, src)
-        # else:
-        #     g.edge_index = pyg.utils.to_undirected(g.edge_index)
+        g.edge_index = pyg.utils.to_undirected(g.edge_index)
 
     if self_loop:
-        if library == 'dgl':
-            g = g.remove_self_loop().add_self_loop()
-        # else:
-        #     edge_index, _ = pyg.utils.remove_self_loops(g.edge_index)
-        #     edge_index, _ = pyg.utils.add_self_loops(edge_index)
+        edge_index, _ = pyg.utils.remove_self_loops(g.edge_index)
+        edge_index, _ = pyg.utils.add_self_loops(edge_index)
 
-        #     g.edge_index = edge_index
+        g.edge_index = edge_index
 
-    if library == 'dgl':
-        in_feats = g.ndata['feat'].shape[-1]
-    else:
-        in_feats = g.x.shape[-1]
+    in_feats = g.x.shape[-1]
 
     out_feats = dataset.num_classes
 
