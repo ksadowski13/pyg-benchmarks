@@ -2,8 +2,7 @@ from collections import namedtuple
 
 import torch
 import torch_geometric as pyg
-from ogb.nodeproppred import (DglNodePropPredDataset, Evaluator,
-                              PygNodePropPredDataset)
+from ogb.nodeproppred import Evaluator, PygNodePropPredDataset
 
 ProcessedDataset = namedtuple(
     'ProcessedDataset',
@@ -29,16 +28,12 @@ class LibraryError(Exception):
 
 
 def process_dataset(
-    library: str,
     name: str,
     root: str,
     reverse_edges: bool = False,
     self_loop: bool = False,
 ) -> ProcessedDataset:
-    if library == 'dgl':
-        dataset = DglNodePropPredDataset(name, root=root)
-    else:
-        dataset = PygNodePropPredDataset(name, root=root)
+    dataset = PygNodePropPredDataset(name, root=root)
 
     split_idx = dataset.get_idx_split()
 
@@ -46,31 +41,26 @@ def process_dataset(
     valid_idx = split_idx['valid']
     test_idx = split_idx['test']
 
-    if library == 'dgl':
-        g, labels = dataset[0]
+    g = dataset[0]
 
-        g.ndata['label'] = labels.squeeze(-1)
-    else:
-        g = dataset[0]
-
-        g.y = g.y.squeeze(-1)
+    g.y = g.y.squeeze(-1)
 
     if reverse_edges:
         if library == 'dgl':
             src, dst = g.all_edges()
 
             g.add_edges(dst, src)
-        else:
-            g.edge_index = pyg.utils.to_undirected(g.edge_index)
+        # else:
+        #     g.edge_index = pyg.utils.to_undirected(g.edge_index)
 
     if self_loop:
         if library == 'dgl':
             g = g.remove_self_loop().add_self_loop()
-        else:
-            edge_index, _ = pyg.utils.remove_self_loops(g.edge_index)
-            edge_index, _ = pyg.utils.add_self_loops(edge_index)
+        # else:
+        #     edge_index, _ = pyg.utils.remove_self_loops(g.edge_index)
+        #     edge_index, _ = pyg.utils.add_self_loops(edge_index)
 
-            g.edge_index = edge_index
+        #     g.edge_index = edge_index
 
     if library == 'dgl':
         in_feats = g.ndata['feat'].shape[-1]

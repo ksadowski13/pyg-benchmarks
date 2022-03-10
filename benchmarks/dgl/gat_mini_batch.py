@@ -1,26 +1,25 @@
 import argparse
 from timeit import default_timer
-from typing import Callable, Union
+from typing import Callable
 
-import dgl
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch_geometric as pyg
-import utils
 from ogb.nodeproppred import Evaluator
 
-from gat import DGLGAT, PyGGAT
+import dgl
+import utils
+from gat import GAT
 
 
 def train(
-    library: str,
     model: nn.Module,
     device: torch.device,
     optimizer: torch.optim.Optimizer,
     loss_function: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
     evaluator: Evaluator,
-    dataloader: Union[dgl.dataloading.NodeDataLoader, pyg.loader.NeighborSampler],
+    dataloader: dgl.dataloading.NodeDataLoader,
     g=None,
 ) -> tuple[float]:
     model.train()
@@ -33,20 +32,12 @@ def train(
     for step, batch in enumerate(dataloader):
         optimizer.zero_grad()
 
-        if library == 'dgl':
-            _, _, blocks = batch
+        _, _, blocks = batch
 
-            blocks = [block.int().to(device) for block in blocks]
+        blocks = [block.int().to(device) for block in blocks]
 
-            inputs = blocks[0].srcdata['feat']
-            labels = blocks[-1].dstdata['label']
-        else:
-            batch_size, nids, blocks = batch
-
-            blocks = [block.to(device) for block in blocks]
-
-            inputs = g.x[nids].to(device)
-            labels = g.y[nids[:batch_size]].to(device)
+        inputs = blocks[0].srcdata['feat']
+        labels = blocks[-1].dstdata['label']
 
         logits = model(blocks, inputs)
 
@@ -69,7 +60,6 @@ def train(
 
 
 def validate(
-    library: str,
     model: nn.Module,
     device: torch.device,
     loss_function: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
@@ -83,12 +73,8 @@ def validate(
 
     start = default_timer()
 
-    if library == 'dgl':
-        inputs = g.ndata['feat']
-        labels = g.ndata['label'][mask]
-    else:
-        inputs = g.x
-        labels = g.y[mask]
+    inputs = g.ndata['feat']
+    labels = g.ndata['label'][mask]
 
     with torch.inference_mode():
         logits = model.inference(
@@ -109,7 +95,6 @@ def run(args: argparse.ArgumentParser) -> None:
     torch.manual_seed(args.seed)
 
     processed_dataset = utils.process_dataset(
-        args.library,
         args.dataset,
         args.dataset_root,
         reverse_edges=args.graph_reverse_edges,
@@ -118,75 +103,47 @@ def run(args: argparse.ArgumentParser) -> None:
 
     activations = {'leaky_relu': F.leaky_relu, 'relu': F.relu}
 
-    if args.library == 'dgl':
-        sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanouts)
-        train_dataloader = dgl.dataloading.NodeDataLoader(
-            processed_dataset.g,
-            processed_dataset.train_idx,
-            sampler,
-            batch_size=args.batch_size,
-            shuffle=True,
-            drop_last=False,
-            num_workers=args.num_workers,
-        )
+    sampler = dgl.dataloading.MultiLayerNeighborSampler(args.fanouts)
+    train_dataloader = dgl.dataloading.NodeDataLoader(
+        processed_dataset.g,
+        processed_dataset.train_idx,
+        sampler,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=False,
+        num_workers=args.num_workers,
+    )
 
-        model = DGLGAT(
-            processed_dataset.in_feats,
-            args.hidden_feats,
-            processed_dataset.out_feats,
-            args.num_heads,
-            args.num_layers,
-            batch_norm=args.batch_norm,
-            input_dropout=args.input_dropout,
-            dropout=args.dropout,
-            activation=activations[args.activation],
-        ).to(args.device)
-    elif args.library == 'pyg':
-        train_dataloader = pyg.loader.NeighborSampler(
-            processed_dataset.g.edge_index,
-            args.fanouts,
-            node_idx=processed_dataset.train_idx,
-            batch_size=args.batch_size,
-            shuffle=True,
-            drop_last=False,
-            num_workers=args.num_workers,
-        )
-
-        model = PyGGAT(
-            processed_dataset.in_feats,
-            args.hidden_feats,
-            processed_dataset.out_feats,
-            args.num_heads,
-            args.num_layers,
-            batch_norm=args.batch_norm,
-            input_dropout=args.input_dropout,
-            dropout=args.dropout,
-            activation=activations[args.activation],
-        ).to(args.device)
+    model = GAT(
+        processed_dataset.in_feats,
+        args.hidden_feats,
+        processed_dataset.out_feats,
+        args.num_heads,
+        args.num_layers,
+        batch_norm=args.batch_norm,
+        input_dropout=args.input_dropout,
+        dropout=args.dropout,
+        activation=activations[args.activation],
+    ).to(args.device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     loss_function = nn.CrossEntropyLoss()
 
-    # checkpoint = utils.Callback(
-    #     args.early_stopping_patience,
-    #     args.early_stopping_monitor,
-    # )
+    train_times = []
+    inference_times = []
 
     print(f'## Started training ##')
 
     for epoch in range(args.num_epochs):
         train_loss, train_score, train_time = train(
-            args.library,
             model,
             args.device,
             optimizer,
             loss_function,
             processed_dataset.evaluator,
             train_dataloader,
-            g=processed_dataset.g if args.library == 'pyg' else None,
         )
         valid_loss, valid_score, valid_time = validate(
-            args.library,
             model,
             args.device,
             loss_function,
@@ -196,17 +153,6 @@ def run(args: argparse.ArgumentParser) -> None:
             args.eval_batch_size,
             args.num_workers,
         )
-
-        # checkpoint.create(
-        #     epoch,
-        #     train_time,
-        #     valid_time,
-        #     train_loss,
-        #     valid_loss,
-        #     train_score,
-        #     valid_score,
-        #     model,
-        # )
 
         print(
             f'Epoch: {epoch + 1:03} '
@@ -218,16 +164,8 @@ def run(args: argparse.ArgumentParser) -> None:
             f'Valid Epoch Time: {valid_time:.2f}'
         )
 
-        # if checkpoint.should_stop:
-        #     print('!! Early Stopping !!')
-
-        #     break
-
     if args.test_validation:
-        # model.load_state_dict(checkpoint.best_epoch_model_parameters)
-
         test_loss, test_score, test_time = validate(
-            args.library,
             model,
             args.device,
             loss_function,
@@ -246,12 +184,13 @@ def run(args: argparse.ArgumentParser) -> None:
 
     print(f'## Finished training ##')
 
+    print(f'Average train epoch time: {np.mean(train_times)}')
+    print(f'Average inference epoch time: {np.mean(inference_times)}')
+
 
 if __name__ == '__main__':
-    argparser = argparse.ArgumentParser('GraphSAGE DGL vs PyG Benchmarking')
+    argparser = argparse.ArgumentParser('GAT DGL')
 
-    argparser.add_argument('--library', default='dgl', type=str,
-                           choices=['dgl', 'pyg'])
     argparser.add_argument('--device', default='cpu', type=str,
                            choices=['cpu', 'cuda'])
     argparser.add_argument('--dataset', default='ogbn-products', type=str,
@@ -261,7 +200,7 @@ if __name__ == '__main__':
                            action=argparse.BooleanOptionalAction)
     argparser.add_argument('--graph-self-loop', default=True,
                            action=argparse.BooleanOptionalAction)
-    argparser.add_argument('--num-epochs', default=200, type=int)
+    argparser.add_argument('--num-epochs', default=20, type=int)
     argparser.add_argument('--lr', default=0.003, type=float)
     argparser.add_argument('--hidden-feats', default=256, type=int)
     argparser.add_argument('--num-layers', default=3, type=int)

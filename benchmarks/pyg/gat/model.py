@@ -1,17 +1,34 @@
-from typing import Callable, Union
+from typing import Callable
 
-import dgl
 import torch
 import torch.nn as nn
-from dgl.nn.pytorch import SAGEConv
+import torch_geometric as pyg
+from torch_geometric.nn import GATConv
 
+# REFERENCE PyG GAT EXAMPLE
+# class Net(torch.nn.Module):
+#     def __init__(self, in_channels, out_channels):
+#         super().__init__()
 
-class DGLGraphSAGE(nn.Module):
+#         self.conv1 = GATConv(in_channels, 8, heads=8, dropout=0.6)
+#         # On the Pubmed dataset, use heads=8 in conv2.
+#         self.conv2 = GATConv(8 * 8, out_channels, heads=1, concat=False,
+#                              dropout=0.6)
+
+#     def forward(self, x, edge_index):
+#         x = F.dropout(x, p=0.6, training=self.training)
+#         x = F.elu(self.conv1(x, edge_index))
+#         x = F.dropout(x, p=0.6, training=self.training)
+#         x = self.conv2(x, edge_index)
+#         return F.log_softmax(x, dim=-1)
+
+class GAT(nn.Module):
     def __init__(
         self,
         in_feats: int,
         hidden_feats: int,
         out_feats: int,
+        num_heads: int,
         num_layers: int,
         batch_norm: bool = False,
         input_dropout: float = 0,
@@ -21,6 +38,7 @@ class DGLGraphSAGE(nn.Module):
         super().__init__()
         self._hidden_feats = hidden_feats
         self._out_feats = out_feats
+        self._num_heads = num_heads
         self._num_layers = num_layers
         self._input_dropout = nn.Dropout(input_dropout)
         self._dropout = nn.Dropout(dropout)
@@ -28,12 +46,12 @@ class DGLGraphSAGE(nn.Module):
 
         self._layers = nn.ModuleList()
 
-        self._layers.append(SAGEConv(in_feats, hidden_feats, 'mean'))
+        self._layers.append(GATConv(in_feats, hidden_feats, num_heads))
 
         for i in range(1, num_layers - 1):
-            self._layers.append(SAGEConv(hidden_feats, hidden_feats, 'mean'))
+            self._layers.append(GATConv(num_heads * hidden_feats, hidden_feats, num_heads))
 
-        self._layers.append(SAGEConv(hidden_feats, out_feats, 'mean'))
+        self._layers.append(GATConv(num_heads * hidden_feats, out_feats, num_heads))
 
         if batch_norm:
             self._batch_norms = nn.ModuleList()
@@ -63,20 +81,24 @@ class DGLGraphSAGE(nn.Module):
 
     def forward(
         self,
-        g: Union[dgl.DGLGraph, list[dgl.DGLGraph]],
+        g,
         inputs: torch.Tensor,
     ) -> torch.Tensor:
         x = self._input_dropout(inputs)
 
         if isinstance(g, list):
             for i, (layer, block) in enumerate(zip(self._layers, g)):
-                x = layer(block, x)
+                edge_index, _, size = block
+
+                x_target = x[:size[-1]]
+
+                x = layer((x, x_target), edge_index)
 
                 if i < self._num_layers - 1:
                     x = self._apply_layers(i, x)
         else:
             for i, layer in enumerate(self._layers):
-                x = layer(g, x)
+                x = layer(x, g)
 
                 if i < self._num_layers - 1:
                     x = self._apply_layers(i, x)
@@ -87,7 +109,7 @@ class DGLGraphSAGE(nn.Module):
 
     def inference(
         self,
-        g: dgl.DGLGraph,
+        g,
         inputs: torch.Tensor,
         batch_size: int,
         num_workers: int,
@@ -96,30 +118,32 @@ class DGLGraphSAGE(nn.Module):
         x = inputs
 
         for i, layer in enumerate(self._layers):
-            hidden_dim = self._hidden_feats if i < self._num_layers - 1 else self._out_feats
+            hidden_dim = self._hidden_feats  * self._num_heads if i < self._num_layers - 1 else self._out_feats  * self._num_heads
 
-            y = torch.zeros((g.num_nodes(), hidden_dim))
+            y = torch.zeros((g.num_nodes, hidden_dim))
 
-            sampler = dgl.dataloading.MultiLayerFullNeighborSampler(1)
-            dataloader = dgl.dataloading.NodeDataLoader(
-                g,
-                g.nodes(),
-                sampler,
+            dataloader = pyg.loader.NeighborSampler(
+                g.edge_index,
+                [-1],
+                node_idx=None,
                 batch_size=batch_size,
-                num_workers=num_workers,
                 shuffle=False,
                 drop_last=False,
+                num_workers=num_workers,
             )
 
-            for in_nodes, out_nodes, blocks in dataloader:
-                block = blocks[0].int().to(device)
+            for batch_size_, nids, block in dataloader:
+                edge_index, _, size = block.to(device)
 
-                h = layer(block, x[in_nodes].to(device))
+                x_ = x[nids].to(device)
+                x_target = x_[:size[-1]]
+
+                h = layer((x_, x_target), edge_index)
 
                 if i < self._num_layers - 1:
                     h = self._apply_layers(i, h)
 
-                y[out_nodes] = h.cpu()
+                y[nids[:batch_size_]] = h.cpu()
 
             x = y
 

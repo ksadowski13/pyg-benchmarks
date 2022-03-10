@@ -6,7 +6,7 @@ import torch_geometric as pyg
 from torch_geometric.nn import SAGEConv
 
 
-class PyGGraphSAGE(nn.Module):
+class GraphSAGE(nn.Module):
     def __init__(
         self,
         in_feats: int,
