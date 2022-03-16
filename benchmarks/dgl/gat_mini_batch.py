@@ -163,6 +163,9 @@ def run(args: argparse.ArgumentParser) -> None:
             f'Train Epoch Time: {train_time:.2f} '
             f'Valid Epoch Time: {valid_time:.2f}'
         )
+        if 9 <= epoch <= 19:
+            train_times.append(train_time)
+            inference_times.append(valid_time)
 
     if args.test_validation:
         test_loss, test_score, test_time = validate(
